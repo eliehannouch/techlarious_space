@@ -1,7 +1,8 @@
 const User = require("../models/userModel");
 const validator = require("validator");
 const bcrypt = require("bcrypt");
-
+const sendMail = require("../utils/email").sendMail;
+const crypto = require("crypto");
 exports.signUp = async (req, res) => {
   try {
     // 1- Check if the email entered is valid
@@ -75,6 +76,98 @@ exports.login = async (req, res) => {
     return res
       .status(200)
       .json({ message: "You are logged in successfully !!" });
+  } catch (err) {
+    console.log(err);
+  }
+};
+
+exports.forgotPassword = async (req, res) => {
+  try {
+    // 1- Check if the user with the provided email exist
+    const user = await User.findOne({ email: req.body.email });
+
+    if (!user) {
+      return res
+        .status(404)
+        .json({ message: "The user with the provided email does not exist." });
+    }
+    // 2- Create the reset token to be sended via email
+
+    const resetToken = user.generatePasswordResetToken();
+    await user.save({ validateBeforeSave: false });
+
+    // 3- send the token via the email
+    // http://127.0.0.1:3000/api/auth/resetPassword/8ba2e2cf34d6ed5e9a73447334a0aa90c46ae917c8bdab63e241c27e37de1c36
+    // 3.1 : Create this url
+
+    const url = `${req.protocol}://${req.get(
+      "host"
+    )}/api/auth/resetPassword/${resetToken}`;
+
+    const msg = `Forgot your password? Reset it by visiting the following link: ${url}`;
+
+    try {
+      await sendMail({
+        email: user.email,
+        subject: "Your password reset token: (Valid for 10 min)",
+        message: msg,
+      });
+
+      res.status(200).json({
+        status: "success",
+        message: "The reset link was delivered to your email successfully",
+      });
+    } catch (err) {
+      user.passwordResetToken = undefined;
+      user.passwordResetExpires = undefined;
+      await user.save({ validateBeforeSave: false });
+
+      res.status(500).json({
+        message:
+          "An error occured while sending the email, pease try again in a moment",
+      });
+    }
+  } catch (err) {
+    console.log(err);
+  }
+};
+
+exports.resetPassword = async (req, res) => {
+  try {
+    const hashedToken = crypto
+      .createHash("sha256")
+      .update(req.params.token)
+      .digest("hex");
+
+    const user = await User.findOne({
+      passwordResetToken: hashedToken,
+      passwordResetExpires: { $gt: Date.now() },
+    });
+
+    if (!user) {
+      return res.status(400).json({
+        message: "The token is invalid, or expired. Please request a new one",
+      });
+    }
+
+    if (req.body.password.length < 8) {
+      return res.status(400).json({ message: "Password length is too short" });
+    }
+
+    if (req.body.password !== req.body.passwordConfirm) {
+      return res
+        .status(400)
+        .json({ message: "Password & Password Confirm are not the same" });
+    }
+
+    user.password = req.body.password;
+    user.passwordConfirm = req.body.passwordConfirm;
+    user.passwordResetToken = undefined;
+    user.passwordResetExpires = undefined;
+    user.passwordChangedAt = Date.now();
+
+    await user.save();
+    return res.status(200).json({ message: "Password changed successfully" });
   } catch (err) {
     console.log(err);
   }
